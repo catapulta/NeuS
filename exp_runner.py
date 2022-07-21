@@ -19,7 +19,7 @@ from models.renderer import NeuSRenderer
 
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False):
-        self.device = torch.device('cuda')
+        self.device = torch.device('cpu')
 
         # Configuration
         self.conf_path = conf_path
@@ -370,7 +370,7 @@ class Runner:
 if __name__ == '__main__':
     print('Hello Wooden')
 
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+#    torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
     logging.basicConfig(level=logging.DEBUG, format=FORMAT)
@@ -385,7 +385,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    torch.cuda.set_device(args.gpu)
+#    torch.cuda.set_device('cpu')
     runner = Runner(args.conf, args.mode, args.case, args.is_continue)
 
     if args.mode == 'train':
