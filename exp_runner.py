@@ -19,7 +19,7 @@ from models.renderer import NeuSRenderer
 
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False):
-        self.device = torch.device('cuda')
+        self.device = torch.device('mps')
 
         # Configuration
         self.conf_path = conf_path
@@ -109,12 +109,12 @@ class Runner:
 
             background_rgb = None
             if self.use_white_bkgd:
-                background_rgb = torch.ones([1, 3])
+                background_rgb = torch.ones([1, 3]).to(self.device)
 
             if self.mask_weight > 0.0:
                 mask = (mask > 0.5).float()
             else:
-                mask = torch.ones_like(mask)
+                mask = torch.ones_like(mask).to(self.device)
 
             mask_sum = mask.sum() + 1e-5
             render_out = self.renderer.render(rays_o, rays_d, near, far,
@@ -130,8 +130,8 @@ class Runner:
 
             # Loss
             color_error = (color_fine - true_rgb) * mask
-            color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
-            psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
+            color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error).to(self.device), reduction='sum') / mask_sum
+            psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt()).to(self.device)
 
             eikonal_loss = gradient_error
 
@@ -248,7 +248,7 @@ class Runner:
 
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
             near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
-            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            background_rgb = torch.ones([1, 3]).to(self.device) if self.use_white_bkgd else None
 
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
@@ -309,7 +309,7 @@ class Runner:
         out_rgb_fine = []
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
             near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
-            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            background_rgb = torch.ones([1, 3]).to(self.device) if self.use_white_bkgd else None
 
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
@@ -326,8 +326,8 @@ class Runner:
         return img_fine
 
     def validate_mesh(self, world_space=False, resolution=64, threshold=0.0):
-        bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
-        bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
+        bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32).to(self.device)
+        bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32).to(self.device)
 
         vertices, triangles =\
             self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
@@ -370,7 +370,7 @@ class Runner:
 if __name__ == '__main__':
     print('Hello Wooden')
 
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+#    torch.set_default_tensor_type('torch.FloatTensor')
 
     FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
     logging.basicConfig(level=logging.DEBUG, format=FORMAT)
@@ -385,7 +385,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    torch.cuda.set_device(args.gpu)
     runner = Runner(args.conf, args.mode, args.case, args.is_continue)
 
     if args.mode == 'train':
