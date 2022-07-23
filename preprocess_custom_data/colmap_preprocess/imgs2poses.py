@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--match_type', type=str, 
 					default='exhaustive_matcher', help='type of matcher used.  Valid options: \
 					exhaustive_matcher sequential_matcher.  Other matchers not supported at this time')
-parser.add_argument('scenedir', type=str,
+parser.add_argument('scenedir', type=str, default='../../../photo/ashurbanipal',
                     help='input scene directory')
 args = parser.parse_args()
 

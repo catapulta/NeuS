@@ -59,25 +59,24 @@ def save_poses(basedir, poses, pts3d, perm):
     vis_arr = []
     for k in pts3d:
         pts_arr.append(pts3d[k].xyz)
-        cams = [0] * poses.shape[-1]
-        for ind in pts3d[k].image_ids:
-            if len(cams) < ind - 1:
-                print('ERROR: the correct camera poses for current points cannot be accessed')
-                return
-            cams[ind-1] = 1
-        vis_arr.append(cams)
+        # cams = [0] * poses.shape[-1]
+        # for ind in pts3d[k].image_ids:
+        #     if len(cams) < ind - 1:
+        #         raise ValueError('ERROR: the correct camera poses for current points cannot be accessed')
+        #     cams[ind-1] = 1
+        # vis_arr.append(cams)
 
     pts = np.stack(pts_arr, axis=0)
     pcd = trimesh.PointCloud(pts)
-    pcd.export(os.path.join(basedir, 'sparse_points.ply'))
+    pcd.export(os.path.join(basedir, '../sparse_points.ply'))
 
     pts_arr = np.array(pts_arr)
-    vis_arr = np.array(vis_arr)
-    print('Points', pts_arr.shape, 'Visibility', vis_arr.shape )
+    # vis_arr = np.array(vis_arr)
+    print('Points', pts_arr.shape, )#'Visibility', vis_arr.shape )
 
     poses = np.moveaxis(poses, -1, 0)
     poses = poses[perm]
-    np.save(os.path.join(basedir, 'poses.npy'), poses)
+    np.save(os.path.join(basedir, '../poses.npy'), poses)
 
 
 def minify_v0(basedir, factors=[], resolutions=[]):
@@ -100,7 +99,7 @@ def minify_v0(basedir, factors=[], resolutions=[]):
         imgs = np.mean(imgs, (-2, -4))
         return imgs
     
-    imgdir = os.path.join(basedir, 'images')
+    imgdir = os.path.join(basedir, '/preprocessed/image')
     imgs = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir))]
     imgs = [f for f in imgs if any([f.endswith(ex) for ex in ['JPG', 'jpg', 'png', 'jpeg', 'PNG']])]
     imgs = np.stack([imageio.imread(img)/255. for img in imgs], 0)
@@ -145,7 +144,7 @@ def minify(basedir, factors=[], resolutions=[]):
     from shutil import copy
     from subprocess import check_output
     
-    imgdir = os.path.join(basedir, 'images')
+    imgdir = os.path.join(basedir, '/preprocessed/image')
     imgs = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir))]
     imgs = [f for f in imgs if any([f.endswith(ex) for ex in ['JPG', 'jpg', 'png', 'jpeg', 'PNG']])]
     imgdir_orig = imgdir
@@ -189,7 +188,7 @@ def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0])
     bds = poses_arr[:, -2:].transpose([1,0])
     
-    img0 = [os.path.join(basedir, 'images', f) for f in sorted(os.listdir(os.path.join(basedir, 'images'))) \
+    img0 = [os.path.join(basedir, '/preprocessed/image', f) for f in sorted(os.listdir(os.path.join(basedir, '/preprocessed/image'))) \
             if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')][0]
     sh = imageio.imread(img0).shape
     
@@ -212,7 +211,7 @@ def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     else:
         factor = 1
     
-    imgdir = os.path.join(basedir, 'images' + sfx)
+    imgdir = os.path.join(basedir, '/preprocessed/image' + sfx)
     if not os.path.exists(imgdir):
         print( imgdir, 'does not exist, returning' )
         return
@@ -258,7 +257,7 @@ def gen_poses(basedir, match_type, factors=None):
         
     print('Post-colmap')
     
-    poses, pts3d, perm = load_colmap_data(basedir)
+    poses, pts3d, perm = load_colmap_data(basedir+'/../')
 
 
     save_poses(basedir, poses, pts3d, perm)
