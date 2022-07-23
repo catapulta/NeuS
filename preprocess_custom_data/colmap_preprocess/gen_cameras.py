@@ -69,10 +69,15 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(out_dir, 'mask'), exist_ok=True)
 
     image_list = glob(os.path.join(work_dir, 'images/*.png'))
-    image_list.sort()
+    image_list = image_list + glob(os.path.join(work_dir, 'images/*.jpg'))
+    image_list.sort()  # important since we rely on colmap alphabetical ordering
 
     for i, image_path in enumerate(image_list):
         img = cv.imread(image_path)
+        if i == 0:
+            img0 = img
+        if img.shape != img0.shape:
+            print("Image is different size than 1st image:", image_path)
         cv.imwrite(os.path.join(out_dir, 'image', '{:0>3d}.png'.format(i)), img)
         cv.imwrite(os.path.join(out_dir, 'mask', '{:0>3d}.png'.format(i)), np.ones_like(img) * 255)
 
