@@ -4,7 +4,9 @@ import sys
 import imageio
 import skimage.transform
 import trimesh
+import shutil
 
+from glob import glob
 from colmap_wrapper import run_colmap
 import colmap_read_model as read_model
 
@@ -30,6 +32,29 @@ def load_colmap_data(realdir):
     bottom = np.array([0,0,0,1.]).reshape([1,4])
     
     names = [imdata[k].name for k in imdata]
+
+    # greedily drop images and re-run colmap (might be way faster to eliminate images from colmap db)
+    non_matches = drop_non_matches_from_dir(realdir, names)
+    i = 1
+    if non_matches:
+        print('COLMAP MISSED IMAGES. STARTING GREEDY PROCEDURE.')
+        print('BEWARE: ONLY `exhaustive_matcher` is implemented.')
+    while non_matches:
+        print(f'ITERATION: {i}')
+        # rm colmap db
+        os.remove(os.path.join(realdir, 'database.db'))
+        shutil.rmtree(os.path.join(realdir, 'sparse'))
+
+        print('Re-running colmap.')
+        run_colmap(realdir, 'exhaustive_matcher')
+
+        imdata = read_model.read_images_binary(imagesfile)
+        w2c_mats = []
+        bottom = np.array([0,0,0,1.]).reshape([1,4])
+        names = [imdata[k].name for k in imdata]
+        non_matches = drop_non_matches_from_dir(realdir, names)
+        i += 1
+
     print( 'Images #', len(names))
     perm = np.argsort(names)
     for k in imdata:
@@ -53,6 +78,23 @@ def load_colmap_data(realdir):
     
     return poses, pts3d, perm
 
+def drop_non_matches_from_dir(realdir, names, iter=-1):
+    current_images = glob(os.path.join(realdir, 'images/*'))
+    imgs_to_keep = []
+    for name in names:
+        img_to_keep = [img for img in current_images if name in img]
+        if len(img_to_keep) > 1:
+            raise ValueError('Too many matches.')
+        imgs_to_keep += img_to_keep
+    imgs_to_drop = set(current_images) - set(imgs_to_keep)
+    print('Images to drop for next iteration:', len(imgs_to_drop))
+
+    if len(imgs_to_drop) > 0:
+        os.makedirs(os.path.join(realdir, 'dropped'), exist_ok=True)
+        for img2drop in imgs_to_drop:
+            shutil.move(img2drop, os.path.join(realdir, 'dropped'))
+
+    return len(imgs_to_drop) > 0
 
 def save_poses(basedir, poses, pts3d, perm):
     pts_arr = []
@@ -62,9 +104,8 @@ def save_poses(basedir, poses, pts3d, perm):
         cams = [0] * poses.shape[-1]
         for ind in pts3d[k].image_ids:
             if len(cams) < ind - 1:
-                print('ERROR: the correct camera poses for current points cannot be accessed')
-                return
-            cams[ind-1] = 1
+                raise ValueError(f'The correct camera poses for current points cannot be accessed: photo {ind}, #poses: {len(cams)}.')
+            # cams[ind-1] = 1
         vis_arr.append(cams)
 
     pts = np.stack(pts_arr, axis=0)
@@ -73,7 +114,7 @@ def save_poses(basedir, poses, pts3d, perm):
 
     pts_arr = np.array(pts_arr)
     vis_arr = np.array(vis_arr)
-    print('Points', pts_arr.shape, 'Visibility', vis_arr.shape )
+    print('Points', pts_arr.shape,)# 'Visibility', vis_arr.sum()/len(vis_arr) )
 
     poses = np.moveaxis(poses, -1, 0)
     poses = poses[perm]
@@ -244,6 +285,11 @@ def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
             
     
 def gen_poses(basedir, match_type, factors=None):
+
+    images = set(glob(os.path.join(basedir, 'images/*.jpg'))) | set(glob(os.path.join(basedir, 'images/*.png')))
+    if len(glob(os.path.join(basedir, 'images/*'))) != len(images):
+        raise ValueError('Files which are not images found. We rely on colmap reading images alphabetically '
+                         'and extra files break this ordering. Please delete files.')
     
     files_needed = ['{}.bin'.format(f) for f in ['cameras', 'images', 'points3D']]
     if os.path.exists(os.path.join(basedir, 'sparse/0')):
