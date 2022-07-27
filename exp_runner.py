@@ -175,8 +175,9 @@ class Runner:
                 image_perm = self.get_image_perm()
 
     def get_image_perm(self):
-        return DataLoader(self.dataset, batch_size=1, shuffle=True,
-                          num_workers=len(os.sched_getaffinity(0)), pin_memory=True)
+        return iter(DataLoader(self.dataset, batch_size=1, shuffle=True,
+                               num_workers=0, #len(os.sched_getaffinity(0)),
+                               pin_memory=False))
 
     def get_cos_anneal_ratio(self):
         if self.anneal_end == 0.0:

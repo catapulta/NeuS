@@ -62,7 +62,7 @@ class ImageDataset(TorchDataset):
         image = torch.from_numpy(image_np.astype(np.float32)).cpu()  # [H, W, 3]
         mask  = torch.from_numpy(mask_np.astype(np.float32)).cpu()   # [H, W, 3]
 
-        return image, mask
+        return image, mask, idx
 
 
 class Dataset(ImageDataset):
@@ -136,19 +136,19 @@ class Dataset(ImageDataset):
         rays_o = self.pose_all[img_idx, None, None, :3, 3].expand(rays_v.shape)  # W, H, 3
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
 
-    def gen_random_rays_at(self, img_idx, batch_size):
+    def gen_random_rays_at(self, img, batch_size):
         """
         Generate random rays at world space from one camera.
         """
         pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
-        color = self[img_idx][0][(pixels_y, pixels_x)]    # batch_size, 3
-        mask = self[img_idx][1][(pixels_y, pixels_x)]      # batch_size, 3
+        color = img[0][(pixels_y, pixels_x)]    # batch_size, 3
+        mask = img[1][(pixels_y, pixels_x)]      # batch_size, 3
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3
-        p = torch.matmul(self.intrinsics_all_inv[img_idx, None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
+        p = torch.matmul(self.intrinsics_all_inv[img[2], None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)    # batch_size, 3
-        rays_v = torch.matmul(self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
-        rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
+        rays_v = torch.matmul(self.pose_all[img[2], None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
+        rays_o = self.pose_all[img[2], None, :3, 3].expand(rays_v.shape) # batch_size, 3
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda()    # batch_size, 10
 
     def gen_rays_between(self, idx_0, idx_1, ratio, resolution_level=1):
