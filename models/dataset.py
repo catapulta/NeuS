@@ -7,6 +7,7 @@ from glob import glob
 from icecream import ic
 from scipy.spatial.transform import Rotation as Rot
 from scipy.spatial.transform import Slerp
+from torch.utils.data import Dataset as TorchDataset
 
 
 # This function is borrowed from IDR: https://github.com/lioryariv/idr
@@ -34,9 +35,38 @@ def load_K_Rt_from_P(filename, P=None):
     return intrinsics, pose
 
 
-class Dataset:
+class ImageDataset(TorchDataset):
+    """Face Landmarks dataset."""
+
+    def __init__(self, img_paths, mask_paths):
+        """
+        Args:
+            csv_file (string): Path to the csv file with annotations.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.img_paths = img_paths
+        self.mask_paths = mask_paths
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        image_np = cv.imread(self.img_paths[idx]) / 256.0
+        mask_np = cv.imread(self.mask_paths[idx]) / 256.0
+
+        image = torch.from_numpy(image_np.astype(np.float32)).cpu()  # [H, W, 3]
+        mask  = torch.from_numpy(mask_np.astype(np.float32)).cpu()   # [H, W, 3]
+
+        return image, mask
+
+
+class Dataset(ImageDataset):
     def __init__(self, conf):
-        super(Dataset, self).__init__()
         print('Load data: Begin')
         self.device = torch.device('cuda')
         self.conf = conf
@@ -51,10 +81,9 @@ class Dataset:
         camera_dict = np.load(os.path.join(self.data_dir, self.render_cameras_name))
         self.camera_dict = camera_dict
         self.images_lis = sorted(glob(os.path.join(self.data_dir, 'image/*.png')))
-        self.n_images = len(self.images_lis)
-        self.images_np = np.stack([cv.imread(im_name) for im_name in self.images_lis]) / 256.0
         self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.png')))
-        self.masks_np = np.stack([cv.imread(im_name) for im_name in self.masks_lis]) / 256.0
+        super(Dataset, self).__init__(self.images_lis, self.masks_lis)
+        self.n_images = self.__len__()
 
         # world_mat is a projection matrix from world to image
         self.world_mats_np = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
@@ -74,13 +103,11 @@ class Dataset:
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
 
-        self.images = torch.from_numpy(self.images_np.astype(np.float32)).cpu()  # [n_images, H, W, 3]
-        self.masks  = torch.from_numpy(self.masks_np.astype(np.float32)).cpu()   # [n_images, H, W, 3]
         self.intrinsics_all = torch.stack(self.intrinsics_all).to(self.device)   # [n_images, 4, 4]
         self.intrinsics_all_inv = torch.inverse(self.intrinsics_all)  # [n_images, 4, 4]
         self.focal = self.intrinsics_all[0][0, 0]
         self.pose_all = torch.stack(self.pose_all).to(self.device)  # [n_images, 4, 4]
-        self.H, self.W = self.images.shape[1], self.images.shape[2]
+        self.H, self.W = self[0][0].shape[0], self[0][0].shape[1]  # grab from 1st sample
         self.image_pixels = self.H * self.W
 
         object_bbox_min = np.array([-1.01, -1.01, -1.01, 1.0])
@@ -115,8 +142,8 @@ class Dataset:
         """
         pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
-        color = self.images[img_idx][(pixels_y, pixels_x)]    # batch_size, 3
-        mask = self.masks[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
+        color = self[img_idx][0][(pixels_y, pixels_x)]    # batch_size, 3
+        mask = self[img_idx][1][(pixels_y, pixels_x)]      # batch_size, 3
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3
         p = torch.matmul(self.intrinsics_all_inv[img_idx, None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)    # batch_size, 3

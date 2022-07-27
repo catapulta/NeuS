@@ -8,6 +8,7 @@ import trimesh
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
 from shutil import copyfile
 from icecream import ic
 from tqdm import tqdm
@@ -102,7 +103,7 @@ class Runner:
         image_perm = self.get_image_perm()
 
         for iter_i in tqdm(range(res_step)):
-            data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            data = self.dataset.gen_random_rays_at(next(image_perm), self.batch_size)
 
             rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
             near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
@@ -174,7 +175,8 @@ class Runner:
                 image_perm = self.get_image_perm()
 
     def get_image_perm(self):
-        return torch.randperm(self.dataset.n_images)
+        return DataLoader(self.dataset, batch_size=1, shuffle=True,
+                          num_workers=len(os.sched_getaffinity(0)), pin_memory=True)
 
     def get_cos_anneal_ratio(self):
         if self.anneal_end == 0.0:
