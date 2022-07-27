@@ -38,7 +38,7 @@ def load_K_Rt_from_P(filename, P=None):
 class ImageDataset(TorchDataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, img_paths, mask_paths):
+    def __init__(self, img_paths, mask_paths, camera_path):
         """
         Args:
             csv_file (string): Path to the csv file with annotations.
@@ -48,21 +48,46 @@ class ImageDataset(TorchDataset):
         """
         self.img_paths = img_paths
         self.mask_paths = mask_paths
+        self.camera_dict = np.load(camera_path)
+        self.device = None
+        self.n_images = len(self.img_paths)
+
+        # world_mat is a projection matrix from world to image
+        self.world_mats_np = [self.camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+
+        self.scale_mats_np = []
+
+        # scale_mat: used for coordinate normalization, we assume the scene to render is inside a unit sphere at origin.
+        self.scale_mats_np = [self.camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+
+        self.intrinsics_all = []
+        self.pose_all = []
+
+        for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
+            P = world_mat @ scale_mat
+            P = P[:3, :4]
+            intrinsics, pose = load_K_Rt_from_P(None, P)
+            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+            self.pose_all.append(torch.from_numpy(pose).float())
+
+        self.intrinsics_all = torch.stack(self.intrinsics_all)#.to(self.device)   # [n_images, 4, 4]
+        self.intrinsics_all_inv = torch.inverse(self.intrinsics_all)  # [n_images, 4, 4]
+        self.focal = self.intrinsics_all[0][0, 0]
+        self.pose_all = torch.stack(self.pose_all)#.to(self.device)  # [n_images, 4, 4]
 
     def __len__(self):
-        return len(self.img_paths)
+        return self.n_images
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        image_np = cv.imread(self.img_paths[idx]) / 256.0
-        mask_np = cv.imread(self.mask_paths[idx]) / 256.0
+        image_np = cv.imread(self.img_paths[idx]).astype(np.float32) / 256.0
+        mask_np = cv.imread(self.mask_paths[idx]).astype(np.float32) / 256.0
+        pose = self.pose_all[idx]
+        intrinsics_all_inv = self.intrinsics_all_inv[idx]
 
-        image = torch.from_numpy(image_np.astype(np.float32)).cpu()  # [H, W, 3]
-        mask  = torch.from_numpy(mask_np.astype(np.float32)).cpu()   # [H, W, 3]
-
-        return image, mask, idx
+        return {'img': image_np, 'mask': mask_np, 'pose': pose, 'intrinsics_all_inv': intrinsics_all_inv}
 
 
 class Dataset(ImageDataset):
@@ -78,35 +103,11 @@ class Dataset(ImageDataset):
         self.camera_outside_sphere = conf.get_bool('camera_outside_sphere', default=True)
         self.scale_mat_scale = conf.get_float('scale_mat_scale', default=1.1)
 
-        camera_dict = np.load(os.path.join(self.data_dir, self.render_cameras_name))
-        self.camera_dict = camera_dict
+        camera_path = os.path.join(self.data_dir, self.render_cameras_name)
         self.images_lis = sorted(glob(os.path.join(self.data_dir, 'image/*.png')))
         self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.png')))
-        super(Dataset, self).__init__(self.images_lis, self.masks_lis)
-        self.n_images = self.__len__()
+        super(Dataset, self).__init__(self.images_lis, self.masks_lis, camera_path)
 
-        # world_mat is a projection matrix from world to image
-        self.world_mats_np = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-
-        self.scale_mats_np = []
-
-        # scale_mat: used for coordinate normalization, we assume the scene to render is inside a unit sphere at origin.
-        self.scale_mats_np = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-
-        self.intrinsics_all = []
-        self.pose_all = []
-
-        for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
-            P = world_mat @ scale_mat
-            P = P[:3, :4]
-            intrinsics, pose = load_K_Rt_from_P(None, P)
-            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
-            self.pose_all.append(torch.from_numpy(pose).float())
-
-        self.intrinsics_all = torch.stack(self.intrinsics_all).to(self.device)   # [n_images, 4, 4]
-        self.intrinsics_all_inv = torch.inverse(self.intrinsics_all)  # [n_images, 4, 4]
-        self.focal = self.intrinsics_all[0][0, 0]
-        self.pose_all = torch.stack(self.pose_all).to(self.device)  # [n_images, 4, 4]
         self.H, self.W = self[0][0].shape[0], self[0][0].shape[1]  # grab from 1st sample
         self.image_pixels = self.H * self.W
 
@@ -142,13 +143,13 @@ class Dataset(ImageDataset):
         """
         pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
-        color = img[0][(pixels_y, pixels_x)]    # batch_size, 3
-        mask = img[1][(pixels_y, pixels_x)]      # batch_size, 3
+        color = img['img'][(pixels_y, pixels_x)]    # batch_size, 3
+        mask = img['mask'][(pixels_y, pixels_x)]      # batch_size, 3
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3
-        p = torch.matmul(self.intrinsics_all_inv[img[2], None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
+        p = torch.matmul(img['intrinsics_all_inv'][None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)    # batch_size, 3
-        rays_v = torch.matmul(self.pose_all[img[2], None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
-        rays_o = self.pose_all[img[2], None, :3, 3].expand(rays_v.shape) # batch_size, 3
+        rays_v = torch.matmul(img['pose'][None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
+        rays_o = img['pose'][None, :3, 3].expand(rays_v.shape) # batch_size, 3
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda()    # batch_size, 10
 
     def gen_rays_between(self, idx_0, idx_1, ratio, resolution_level=1):
