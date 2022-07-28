@@ -176,8 +176,11 @@ class Runner:
 
     def get_image_perm(self):
         return iter(DataLoader(self.dataset, batch_size=1, shuffle=True,
-                               num_workers=0, #len(os.sched_getaffinity(0)),
-                               pin_memory=False))
+                               num_workers=len(os.sched_getaffinity(0)),
+                               pin_memory=True,
+                               generator=torch.Generator(device='cuda'),
+                               multiprocessing_context='spawn',
+                               prefetch_factor=4))
 
     def get_cos_anneal_ratio(self):
         if self.anneal_end == 0.0:

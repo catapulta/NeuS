@@ -48,17 +48,15 @@ class ImageDataset(TorchDataset):
         """
         self.img_paths = img_paths
         self.mask_paths = mask_paths
-        self.camera_dict = np.load(camera_path)
-        self.device = None
+        camera_dict = np.load(camera_path)
         self.n_images = len(self.img_paths)
 
         # world_mat is a projection matrix from world to image
-        self.world_mats_np = [self.camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+        self.world_mats_np = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
 
         self.scale_mats_np = []
-
         # scale_mat: used for coordinate normalization, we assume the scene to render is inside a unit sphere at origin.
-        self.scale_mats_np = [self.camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+        self.scale_mats_np = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
 
         self.intrinsics_all = []
         self.pose_all = []
@@ -70,10 +68,10 @@ class ImageDataset(TorchDataset):
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
 
-        self.intrinsics_all = torch.stack(self.intrinsics_all)#.to(self.device)   # [n_images, 4, 4]
-        self.intrinsics_all_inv = torch.inverse(self.intrinsics_all)  # [n_images, 4, 4]
-        self.focal = self.intrinsics_all[0][0, 0]
-        self.pose_all = torch.stack(self.pose_all)#.to(self.device)  # [n_images, 4, 4]
+        self.intrinsics_all = torch.stack(self.intrinsics_all).cpu()#.to(self.device)   # [n_images, 4, 4]
+        self.intrinsics_all_inv = torch.inverse(self.intrinsics_all).cpu()  # [n_images, 4, 4]
+        # self.focal = self.intrinsics_all[0][0, 0]  # causes dataloader error
+        self.pose_all = torch.stack(self.pose_all).cpu()#.to(self.device)  # [n_images, 4, 4]
 
     def __len__(self):
         return self.n_images
@@ -86,9 +84,7 @@ class ImageDataset(TorchDataset):
         mask_np = cv.imread(self.mask_paths[idx]).astype(np.float32) / 256.0
         pose = self.pose_all[idx]
         intrinsics_all_inv = self.intrinsics_all_inv[idx]
-
         return {'img': image_np, 'mask': mask_np, 'pose': pose, 'intrinsics_all_inv': intrinsics_all_inv}
-
 
 class Dataset(ImageDataset):
     def __init__(self, conf):
@@ -108,7 +104,7 @@ class Dataset(ImageDataset):
         self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.png')))
         super(Dataset, self).__init__(self.images_lis, self.masks_lis, camera_path)
 
-        self.H, self.W = self[0][0].shape[0], self[0][0].shape[1]  # grab from 1st sample
+        self.H, self.W = self[0]['img'].shape[0], self[0]['img'].shape[1]  # grab from 1st sample
         self.image_pixels = self.H * self.W
 
         object_bbox_min = np.array([-1.01, -1.01, -1.01, 1.0])
@@ -131,26 +127,30 @@ class Dataset(ImageDataset):
         ty = torch.linspace(0, self.H - 1, self.H // l)
         pixels_x, pixels_y = torch.meshgrid(tx, ty)
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1) # W, H, 3
-        p = torch.matmul(self.intrinsics_all_inv[img_idx, None, None, :3, :3], p[:, :, :, None]).squeeze()  # W, H, 3
+        p = torch.matmul(self.intrinsics_all_inv[img_idx, None, None, :3, :3].to(self.device),
+                         p[:, :, :, None]).squeeze()  # W, H, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
-        rays_v = torch.matmul(self.pose_all[img_idx, None, None, :3, :3], rays_v[:, :, :, None]).squeeze()  # W, H, 3
-        rays_o = self.pose_all[img_idx, None, None, :3, 3].expand(rays_v.shape)  # W, H, 3
+        rays_v = torch.matmul(self.pose_all[img_idx, None, None, :3, :3].to(self.device),
+                              rays_v[:, :, :, None]).squeeze()  # W, H, 3
+        rays_o = self.pose_all[img_idx, None, None, :3, 3].to(self.device).expand(rays_v.shape)  # W, H, 3
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
 
     def gen_random_rays_at(self, img, batch_size):
         """
         Generate random rays at world space from one camera.
         """
-        pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
-        pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
-        color = img['img'][(pixels_y, pixels_x)]    # batch_size, 3
-        mask = img['mask'][(pixels_y, pixels_x)]      # batch_size, 3
+        pixels_x = torch.randint(low=0, high=self.W, size=[batch_size]).to(self.device)
+        pixels_y = torch.randint(low=0, high=self.H, size=[batch_size]).to(self.device)
+        color = img['img'][0, pixels_y, pixels_x].to(self.device)    # batch_size, 3
+        mask = img['mask'][0, pixels_y, pixels_x].to(self.device)      # batch_size, 3
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3
-        p = torch.matmul(img['intrinsics_all_inv'][None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
-        rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)    # batch_size, 3
-        rays_v = torch.matmul(img['pose'][None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
-        rays_o = img['pose'][None, :3, 3].expand(rays_v.shape) # batch_size, 3
-        return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda()    # batch_size, 10
+        intrinsics_all_inv = img['intrinsics_all_inv'][0].to(self.device)
+        p = torch.matmul(intrinsics_all_inv[None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
+        rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # batch_size, 3
+        pose = img['pose'][0].to(self.device)
+        rays_v = torch.matmul(pose[None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
+        rays_o = pose[None, :3, 3].expand(rays_v.shape) # batch_size, 3
+        return torch.cat([rays_o, rays_v, color, mask[:, :1]], dim=-1)    # batch_size, 10
 
     def gen_rays_between(self, idx_0, idx_1, ratio, resolution_level=1):
         """
@@ -161,7 +161,8 @@ class Dataset(ImageDataset):
         ty = torch.linspace(0, self.H - 1, self.H // l)
         pixels_x, pixels_y = torch.meshgrid(tx, ty)
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1)  # W, H, 3
-        p = torch.matmul(self.intrinsics_all_inv[0, None, None, :3, :3], p[:, :, :, None]).squeeze()  # W, H, 3
+        p = torch.matmul(self.intrinsics_all_inv[0, None, None, :3, :3].to(self.device),
+                         p[:, :, :, None]).squeeze()  # W, H, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
         trans = self.pose_all[idx_0, :3, 3] * (1.0 - ratio) + self.pose_all[idx_1, :3, 3] * ratio
         pose_0 = self.pose_all[idx_0].detach().cpu().numpy()
@@ -179,8 +180,8 @@ class Dataset(ImageDataset):
         pose[:3, :3] = rot.as_matrix()
         pose[:3, 3] = ((1.0 - ratio) * pose_0 + ratio * pose_1)[:3, 3]
         pose = np.linalg.inv(pose)
-        rot = torch.from_numpy(pose[:3, :3]).cuda()
-        trans = torch.from_numpy(pose[:3, 3]).cuda()
+        rot = torch.from_numpy(pose[:3, :3]).to(self.device)
+        trans = torch.from_numpy(pose[:3, 3]).to(self.device)
         rays_v = torch.matmul(rot[None, None, :3, :3], rays_v[:, :, :, None]).squeeze()  # W, H, 3
         rays_o = trans[None, None, :3].expand(rays_v.shape)  # W, H, 3
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
