@@ -80,8 +80,8 @@ class ImageDataset(TorchDataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        image_np = cv.imread(self.img_paths[idx]).astype(np.float32) / 256.0
-        mask_np = cv.imread(self.mask_paths[idx]).astype(np.float32) / 256.0
+        image_np = np.load(self.img_paths[idx]).astype(np.float32) / 256.0
+        mask_np = np.load(self.mask_paths[idx]).astype(np.float32) / 256.0
         pose = self.pose_all[idx]
         intrinsics_all_inv = self.intrinsics_all_inv[idx]
         return {'img': image_np, 'mask': mask_np, 'pose': pose, 'intrinsics_all_inv': intrinsics_all_inv}
@@ -100,8 +100,8 @@ class Dataset(ImageDataset):
         self.scale_mat_scale = conf.get_float('scale_mat_scale', default=1.1)
 
         camera_path = os.path.join(self.data_dir, self.render_cameras_name)
-        self.images_lis = sorted(glob(os.path.join(self.data_dir, 'image/*.png')))
-        self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.png')))
+        self.images_lis = sorted(glob(os.path.join(self.data_dir, 'image/*.npy')))
+        self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.npy')))
         super(Dataset, self).__init__(self.images_lis, self.masks_lis, camera_path)
 
         self.H, self.W = self[0]['img'].shape[0], self[0]['img'].shape[1]  # grab from 1st sample
@@ -195,6 +195,6 @@ class Dataset(ImageDataset):
         return near, far
 
     def image_at(self, idx, resolution_level):
-        img = cv.imread(self.images_lis[idx])
+        img = np.read(self.images_lis[idx])
         return (cv.resize(img, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
