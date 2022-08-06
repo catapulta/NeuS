@@ -68,12 +68,14 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(out_dir, 'image'), exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'mask'), exist_ok=True)
 
-    image_list = glob(os.path.join(work_dir, 'images/*.png'))
-    image_list = image_list + glob(os.path.join(work_dir, 'images/*.jpg'))
+    with open(os.path.join(work_dir,"view_imgs.txt"), "r") as f:
+        image_list = f.read().split('\n')
+    
+    # image_list = glob(os.path.join(work_dir, 'images/*.png'))
     image_list.sort()  # important since we rely on colmap alphabetical ordering
 
     for i, image_path in enumerate(image_list):
-        img = cv.imread(image_path)
+        img = cv.imread(os.path.join(work_dir,'images',image_path))
         if i == 0:
             img0 = img
         if img.shape != img0.shape:

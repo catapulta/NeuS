@@ -1,14 +1,94 @@
 import numpy as np
 import os
-import sys
 import imageio
 import skimage.transform
 import trimesh
-import shutil
 
-from glob import glob
 from colmap_wrapper import run_colmap
 import colmap_read_model as read_model
+
+def save_views(realdir,names):
+    with open(os.path.join(realdir,'view_imgs.txt'), mode='w') as f:
+        f.writelines('\n'.join(names))
+    f.close()
+
+
+def load_save_pose(realdir):
+
+    # load colmap data 
+    camerasfile = os.path.join(realdir, 'sparse/0/cameras.bin')
+    camdata = read_model.read_cameras_binary(camerasfile)
+    
+    list_of_keys = list(camdata.keys())
+    cam = camdata[list_of_keys[0]]
+    print( 'Cameras', cam)
+
+    h, w, f = cam.height, cam.width, cam.params[0]
+    hwf = np.array([h,w,f]).reshape([3,1])
+    
+    imagesfile = os.path.join(realdir, 'sparse/0/images.bin')
+    imdata = read_model.read_images_binary(imagesfile)
+    
+    real_ids = [k for k in imdata]
+
+    w2c_mats = []
+    bottom = np.array([0,0,0,1.]).reshape([1,4])
+    
+    names = [imdata[k].name for k in imdata]
+    print( 'Images #', len(names))
+
+    # if (len(names)< 32):
+    #     raise ValueError(f'{realdir} only {len(names)} images register, need Re-run colmap or reset the threshold')
+
+
+    perm = np.argsort(names)
+    sort_names = [names[i] for i in perm]
+    save_views(realdir,sort_names)
+
+    for k in imdata:
+        im = imdata[k]
+        R = im.qvec2rotmat()
+        t = im.tvec.reshape([3,1])
+        m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
+        w2c_mats.append(m)
+    
+    w2c_mats = np.stack(w2c_mats, 0)
+    c2w_mats = np.linalg.inv(w2c_mats)
+    
+    poses = c2w_mats[:, :3, :4].transpose([1,2,0])
+    poses = np.concatenate([poses, np.tile(hwf[..., np.newaxis], [1,1,poses.shape[-1]])], 1)
+    
+    points3dfile = os.path.join(realdir, 'sparse/0/points3D.bin')
+    pts3d = read_model.read_points3d_binary(points3dfile)
+    
+    # must switch to [-u, r, -t] from [r, -u, t], NOT [r, u, -t]
+    poses = np.concatenate([poses[:, 1:2, :], poses[:, 0:1, :], -poses[:, 2:3, :], poses[:, 3:4, :], poses[:, 4:5, :]], 1)
+
+    # save pose
+    pts_arr = []
+    vis_arr = []
+    for k in pts3d:
+        pts_arr.append(pts3d[k].xyz)
+        cams = [0] * poses.shape[-1]
+        for ind in pts3d[k].image_ids:
+            if len(cams) < real_ids.index(ind):
+                print('ERROR: the correct camera poses for current points cannot be accessed')
+                return
+            cams[real_ids.index(ind)] = 1
+        vis_arr.append(cams)
+        
+    pts = np.stack(pts_arr, axis=0)
+    pcd = trimesh.PointCloud(pts)
+    pcd.export(os.path.join(realdir, 'sparse_points.ply'))
+
+    pts_arr = np.array(pts_arr)
+    vis_arr = np.array(vis_arr)
+    print( 'Points', pts_arr.shape, 'Visibility', vis_arr.shape)
+    
+    nposes = np.moveaxis(poses, -1, 0)
+    nposes = nposes[perm]
+    np.save(os.path.join(realdir, 'poses.npy'), nposes)    
+    
 
 
 def load_colmap_data(realdir):
@@ -32,29 +112,6 @@ def load_colmap_data(realdir):
     bottom = np.array([0,0,0,1.]).reshape([1,4])
     
     names = [imdata[k].name for k in imdata]
-
-    # greedily drop images and re-run colmap (might be way faster to eliminate images from colmap db)
-    non_matches = drop_non_matches_from_dir(realdir, names)
-    i = 1
-    if non_matches:
-        print('COLMAP MISSED IMAGES. STARTING GREEDY PROCEDURE.')
-        print('BEWARE: ONLY `exhaustive_matcher` is implemented.')
-    while non_matches:
-        print(f'ITERATION: {i}')
-        # rm colmap db
-        os.remove(os.path.join(realdir, 'database.db'))
-        shutil.rmtree(os.path.join(realdir, 'sparse'))
-
-        print('Re-running colmap.')
-        run_colmap(realdir, 'exhaustive_matcher')
-
-        imdata = read_model.read_images_binary(imagesfile)
-        w2c_mats = []
-        bottom = np.array([0,0,0,1.]).reshape([1,4])
-        names = [imdata[k].name for k in imdata]
-        non_matches = drop_non_matches_from_dir(realdir, names)
-        i += 1
-
     print( 'Images #', len(names))
     perm = np.argsort(names)
     for k in imdata:
@@ -75,26 +132,8 @@ def load_colmap_data(realdir):
     
     # must switch to [-u, r, -t] from [r, -u, t], NOT [r, u, -t]
     poses = np.concatenate([poses[:, 1:2, :], poses[:, 0:1, :], -poses[:, 2:3, :], poses[:, 3:4, :], poses[:, 4:5, :]], 1)
-    
     return poses, pts3d, perm
 
-def drop_non_matches_from_dir(realdir, names, iter=-1):
-    current_images = glob(os.path.join(realdir, 'images/*'))
-    imgs_to_keep = []
-    for name in names:
-        img_to_keep = [img for img in current_images if name in img]
-        if len(img_to_keep) > 1:
-            raise ValueError('Too many matches.')
-        imgs_to_keep += img_to_keep
-    imgs_to_drop = set(current_images) - set(imgs_to_keep)
-    print('Images to drop for next iteration:', len(imgs_to_drop))
-
-    if len(imgs_to_drop) > 0:
-        os.makedirs(os.path.join(realdir, 'dropped'), exist_ok=True)
-        for img2drop in imgs_to_drop:
-            shutil.move(img2drop, os.path.join(realdir, 'dropped'))
-
-    return len(imgs_to_drop) > 0
 
 def save_poses(basedir, poses, pts3d, perm):
     pts_arr = []
@@ -104,21 +143,32 @@ def save_poses(basedir, poses, pts3d, perm):
         cams = [0] * poses.shape[-1]
         for ind in pts3d[k].image_ids:
             if len(cams) < ind - 1:
-                raise ValueError(f'The correct camera poses for current points cannot be accessed: photo {ind}, #poses: {len(cams)}.')
-            # cams[ind-1] = 1
+                print('ERROR: the correct camera poses for current points cannot be accessed')
+                return
+            cams[ind-1] = 1
         vis_arr.append(cams)
-
-    pts = np.stack(pts_arr, axis=0)
-    pcd = trimesh.PointCloud(pts)
-    pcd.export(os.path.join(basedir, 'sparse_points.ply'))
 
     pts_arr = np.array(pts_arr)
     vis_arr = np.array(vis_arr)
-    print('Points', pts_arr.shape,)# 'Visibility', vis_arr.sum()/len(vis_arr) )
+    print( 'Points', pts_arr.shape, 'Visibility', vis_arr.shape)
+    zvals = np.sum(-(pts_arr[:, np.newaxis, :].transpose([2,0,1]) - poses[:3, 3:4, :]) * poses[:3, 2:3, :], 0)
+    valid_z = zvals[vis_arr==1]
+    print( 'Depth stats', valid_z.min(), valid_z.max(), valid_z.mean() )
+    
+    save_arr = []
+    for i in perm:
+        vis = vis_arr[:, i]
+        zs = zvals[:, i]
+        zs = zs[vis==1]
+        close_depth, inf_depth = np.percentile(zs, .1), np.percentile(zs, 99.9)
+        # print( i, close_depth, inf_depth )
+        
+        save_arr.append(np.concatenate([poses[..., i].ravel(), np.array([close_depth, inf_depth])], 0))
+    save_arr = np.array(save_arr)
+    
+    np.save(os.path.join(basedir, 'poses_bounds.npy'), save_arr)
+            
 
-    poses = np.moveaxis(poses, -1, 0)
-    poses = poses[perm]
-    np.save(os.path.join(basedir, 'poses.npy'), poses)
 
 
 def minify_v0(basedir, factors=[], resolutions=[]):
@@ -282,14 +332,12 @@ def load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     
     print('Loaded image data', imgs.shape, poses[:,-1,0])
     return poses, bds, imgs
+
+    
+            
             
     
 def gen_poses(basedir, match_type, factors=None):
-
-    images = set(glob(os.path.join(basedir, 'images/*.jpg'))) | set(glob(os.path.join(basedir, 'images/*.png')))
-    if len(glob(os.path.join(basedir, 'images/*'))) != len(images):
-        raise ValueError('Files which are not images found. We rely on colmap reading images alphabetically '
-                         'and extra files break this ordering. Please delete files.')
     
     files_needed = ['{}.bin'.format(f) for f in ['cameras', 'images', 'points3D']]
     if os.path.exists(os.path.join(basedir, 'sparse/0')):
@@ -301,13 +349,13 @@ def gen_poses(basedir, match_type, factors=None):
         run_colmap(basedir, match_type)
     else:
         print('Don\'t need to run COLMAP')
-        
-    print('Post-colmap')
+    print( 'Post-colmap')
+
+    load_save_pose(basedir)
+
+    # poses, pts3d, perm = load_colmap_data(basedir)
     
-    poses, pts3d, perm = load_colmap_data(basedir)
-
-
-    save_poses(basedir, poses, pts3d, perm)
+    # save_poses(basedir, poses, pts3d, perm)
     
     if factors is not None:
         print( 'Factors:', factors)
