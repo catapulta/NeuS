@@ -39,6 +39,7 @@ def run_colmap(basedir, match_type):
     exhaustive_matcher_args = [
         'colmap', match_type, 
             '--database_path', os.path.join(basedir, 'database.db'), 
+            '--SiftMatching.guided_matching', '1',
     ]
 
     match_output = ( subprocess.check_output(exhaustive_matcher_args, universal_newlines=True) )
